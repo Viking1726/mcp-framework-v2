@@ -1,0 +1,48 @@
+{
+    "server": {
+        "host": "0.0.0.0",
+        "port": 8000
+    },
+    "llm": {
+        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "model": "qwen-plus",
+        "api_key": "sk-8792c0c8311643a9a4ad31c8292bf5bd",
+        "timeout": 300
+    },
+    "mcp_servers": [
+        {
+            "id": "time",
+            "command": "uvx",
+            "args": [
+                "mcp-server-time",
+                "--local-timezone=Asia/ShangHai"
+            ],
+            "enabled": true
+        },
+        {
+            "id": "filesystem",
+            "command": "npx",
+            "args": [
+                "-y",
+                "@modelcontextprotocol/server-filesystem",
+                "/Users/viking/mcp-filesystem"
+            ],
+            "enabled": true
+        },
+        {
+            "id": "fetch",
+            "command": "uvx",
+            "args": [
+                "mcp-server-fetch"
+            ],
+            "env": {
+                "FETCH_IGNORE_ROBOTS": "true",
+                "USER_AGENT": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            },
+            "enabled": true
+        }
+    ],
+    "logging": {
+        "level": "INFO"
+    }
+}

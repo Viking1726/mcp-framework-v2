@@ -1,0 +1,761 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MCP Framework v2 - 聊天界面</title>
+    <!-- 引入 Marked.js 用于 Markdown 解析 -->
+    <script src="https://cdn.jsdelivr.net/npm/marked@4.3.0/marked.min.js"></script>
+    <!-- 引入 highlight.js 用于代码高亮 -->
+    <script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.7.0/build/highlight.min.js"></script>
+    <link rel="stylesheet"
+          href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.7.0/build/styles/github.min.css">
+    <!-- DOMPurify 防止 XSS 攻击 -->
+    <script src="https://cdn.jsdelivr.net/npm/dompurify@2.4.5/dist/purify.min.js"></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+        }
+
+        .header {
+            padding: 0 12px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border-bottom: 1px solid #dee2e6;
+            display: flex;
+            height: 60px;
+            align-items: center;
+            justify-content: space-between;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+
+        .header h1 {
+            margin: 0;
+            font-size: 18px;
+            font-weight: 600;
+        }
+
+        .header-controls {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+
+        .messages {
+            padding: 20px;
+            max-width: 800px;
+            margin: 0 auto;
+            height: calc(100vh - 160px);
+            overflow-y: auto;
+            padding-bottom: 80px;
+            scroll-behavior: smooth;
+        }
+
+        .message {
+            margin-bottom: 20px;
+            padding: 15px;
+            border-radius: 8px;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+        }
+
+        .message.user {
+            background: #e3f2fd;
+            margin-left: 40px;
+            border-bottom-right-radius: 0;
+        }
+
+        .message.assistant {
+            background: #f8f9fa;
+            margin-right: 40px;
+            border-bottom-left-radius: 0;
+        }
+
+        .message-stats {
+            font-size: 0.8em;
+            color: #6c757d;
+            margin-top: 8px;
+            padding-top: 8px;
+            border-top: 1px solid rgba(0, 0, 0, 0.05);
+        }
+
+        .input-container {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            padding: 15px;
+            background: white;
+            border-top: 1px solid #dee2e6;
+            box-shadow: 0 -2px 10px rgba(0, 0, 0, 0.05);
+        }
+
+        .input-wrapper {
+            max-width: 800px;
+            margin: 0 auto;
+            display: flex;
+            gap: 12px;
+        }
+
+        #messageInput {
+            flex: 1;
+            padding: 12px;
+            border: 1px solid #ced4da;
+            border-radius: 4px;
+            font-size: 16px;
+            transition: border-color 0.15s ease-in-out, box-shadow 0.15s ease-in-out;
+        }
+
+        #messageInput:focus {
+            border-color: #86b7fe;
+            outline: 0;
+            box-shadow: 0 0 0 0.25rem rgba(13, 110, 253, 0.25);
+        }
+
+        /* Markdown 样式 */
+        .message-content * {
+            margin: 0;
+            padding: 0;
+            line-height: 1.5;
+        }
+
+        .message-content h1,
+        .message-content h2,
+        .message-content h3,
+        .message-content h4,
+        .message-content h5,
+        .message-content h6 {
+            margin: 0.5em 0 0.3em;
+            line-height: 1.25;
+        }
+
+        .message-content ul,
+        .message-content ol {
+            padding-left: 1.4em;
+            margin: 0.3em 0;
+        }
+
+        .message-content li {
+            margin: 0.2em 0;
+        }
+
+        .message-content p {
+            margin: 0.4em 0;
+        }
+
+        .message-content pre {
+            margin: 0.5em 0;
+        }
+
+        .message-content blockquote {
+            margin: 0.4em 0;
+        }
+
+        /* 工具调用和结果自定义样式 */
+        .tool-call {
+            background: #e3f2fd;
+            padding: 12px;
+            margin: 2px 0;
+            border-radius: 6px;
+            font-family: monospace;
+            position: relative;
+        }
+
+        .tool-result {
+            background: #f3e5f5;
+            padding: 12px;
+            margin: 2px 0;
+            border-radius: 6px;
+            font-family: monospace;
+            position: relative;
+        }
+
+        /* 复制代码按钮 */
+        .copy-button {
+            position: absolute;
+            top: 5px;
+            right: 5px;
+            background: rgba(255, 255, 255, 0.7);
+            border: none;
+            border-radius: 3px;
+            padding: 3px 8px;
+            font-size: 12px;
+            cursor: pointer;
+            display: none;
+        }
+
+        .code-block-wrapper {
+            position: relative;
+        }
+
+        .code-block-wrapper:hover .copy-button {
+            display: block;
+        }
+
+        #sendButton {
+            padding: 12px 24px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: 500;
+            transition: all 0.15s ease-in-out;
+        }
+
+        #sendButton:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+        }
+
+        #sendButton:active {
+            transform: translateY(0);
+        }
+        
+        #modelSelect {
+            padding: 8px 12px;
+            border-radius: 4px;
+            border: 1px solid rgba(255,255,255,0.3);
+            background: rgba(255,255,255,0.1);
+            color: white;
+            backdrop-filter: blur(10px);
+        }
+
+        #modelSelect option {
+            background: #333;
+            color: white;
+        }
+
+        .clear-button {
+            padding: 8px 16px;
+            background: rgba(220, 53, 69, 0.8);
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            backdrop-filter: blur(10px);
+            transition: background 0.15s ease-in-out;
+        }
+
+        .clear-button:hover {
+            background: rgba(220, 53, 69, 1);
+        }
+
+        /* 特殊提示块样式 */
+        .message-content .info-block {
+            background-color: #e7f5ff;
+            border-left: 4px solid #4dabf7;
+            padding: 12px;
+            margin: 2px 0;
+        }
+
+        .message-content .warning-block {
+            background-color: #fff3bf;
+            border-left: 4px solid #fab005;
+            padding: 12px;
+            margin: 2px 0;
+        }
+
+        .message-content .error-block {
+            background-color: #ffe3e3;
+            border-left: 4px solid #fa5252;
+            padding: 12px;
+            margin: 2px 0;
+        }
+
+        .message-content .success-block {
+            background-color: #d3f9d8;
+            border-left: 4px solid #40c057;
+            padding: 12px;
+            margin: 2px 0;
+        }
+
+        think {
+            display: block;
+            padding: 8px !important;
+            background: #f3f3f3;
+            border-left: 4px solid #ccc;
+            margin: 4px 0;
+            font-size: 0.9em;
+        }
+
+        details.think-wrapper {
+            font-family: sans-serif;
+            background: #f4f6ff;
+            border-left: 4px solid #91a7ff;
+            border-radius: 6px;
+            padding: 8px 12px;
+            margin: 10px 0;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+        }
+
+        /* 工具执行标签样式 */
+        .tool-executing {
+            background-color: #e9ecef;
+            border-left: 4px solid #868e96;
+            padding: 10px;
+            margin: 8px 0;
+            font-family: monospace;
+            border-radius: 4px;
+            position: relative;
+        }
+
+        .tool-result-wrapper {
+            background-color: #fff3cd;
+            border-left: 4px solid #ffc107;
+            padding: 10px;
+            margin: 8px 0;
+            font-family: monospace;
+            border-radius: 4px;
+            overflow-x: auto;
+        }
+
+        .tool-completed {
+            background-color: #d4edda;
+            border-left: 4px solid #28a745;
+            padding: 10px;
+            margin: 8px 0;
+            font-family: monospace;
+            border-radius: 4px;
+            color: #155724;
+            font-style: italic;
+        }
+
+        details.tool-wrapper {
+            font-family: sans-serif;
+            background: #f8f9fa;
+            border-left: 4px solid #6c757d;
+            border-radius: 6px;
+            padding: 8px 12px;
+            margin: 10px 0;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+        }
+
+        details.tool-wrapper summary {
+            cursor: pointer;
+            user-select: none;
+            font-weight: 500;
+            color: #343a40;
+        }
+
+        img {
+            max-width: 100%;
+            height: auto;
+            display: block;
+            margin: 0 auto;
+        }
+
+        .status-indicator {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            margin-right: 8px;
+        }
+
+        .status-healthy {
+            background-color: #28a745;
+            animation: pulse 2s infinite;
+        }
+
+        .status-error {
+            background-color: #dc3545;
+        }
+
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.5; }
+            100% { opacity: 1; }
+        }
+
+        .framework-info {
+            font-size: 12px;
+            opacity: 0.8;
+        }
+    </style>
+</head>
+<body>
+<div class="header">
+    <div>
+        <h1>
+            <span class="status-indicator status-healthy" id="statusIndicator"></span>
+            MCP Framework v2
+        </h1>
+        <div class="framework-info">微核心架构 | 插件式设计</div>
+    </div>
+    <div class="header-controls">
+        <select id="modelSelect">
+            <option value="">加载中...</option>
+        </select>
+        <button class="clear-button" onclick="clearChat()">清空对话</button>
+    </div>
+</div>
+
+<div class="messages" id="messages">
+    <div class="message assistant">
+        <div class="message-content">
+            你好！我是基于MCP Framework v2的AI助手。<br>
+            我可以使用多种工具来帮助你，包括文件操作、时间查询等。<br>
+            <strong>🚀 v2架构特点：</strong><br>
+            • 微核心 + 插件设计<br>
+            • 代码量减少40%<br>
+            • 更快的启动速度<br>
+            • 更好的可扩展性
+        </div>
+    </div>
+</div>
+
+<div class="input-container">
+    <div class="input-wrapper">
+        <input type="text" id="messageInput" placeholder="输入消息...试试问我现在几点或者操作文件"/>
+        <button id="sendButton">发送</button>
+    </div>
+</div>
+
+<script>
+    const API_BASE = 'http://localhost:8000';
+    let conversationHistory = [];
+    let isProcessing = false;
+
+    // 配置 Marked 选项
+    marked.setOptions({
+        renderer: new marked.Renderer(),
+        highlight: function (code, lang) {
+            const language = hljs.getLanguage(lang) ? lang : 'plaintext';
+            return hljs.highlight(code, {language}).value;
+        },
+        langPrefix: 'hljs language-',
+        pedantic: false,
+        gfm: true,
+        breaks: true,
+        sanitize: false,
+        smartypants: false
+    });
+
+    // 扩展 Marked 渲染
+    const renderer = new marked.Renderer();
+
+    // 自定义代码块渲染，添加复制按钮
+    renderer.code = function (code, language) {
+        const validLang = hljs.getLanguage(language) ? language : 'plaintext';
+        const highlightedCode = hljs.highlight(code, {language: validLang}).value;
+
+        return `
+        <div class="code-block-wrapper">
+          <button class="copy-button" onclick="copyCode(this)">复制</button>
+          <pre><code class="hljs language-${validLang}">${highlightedCode}</code></pre>
+        </div>
+      `;
+    };
+
+    marked.use({renderer});
+
+    // 页面加载时初始化
+    window.addEventListener('DOMContentLoaded', async function () {
+        await checkHealth();
+        await loadModels();
+        document.getElementById('messageInput').focus();
+        
+        // 定期检查健康状态
+        setInterval(checkHealth, 30000); // 每30秒检查一次
+    });
+
+    // 检查服务健康状态
+    async function checkHealth() {
+        try {
+            const response = await fetch(`${API_BASE}/health`);
+            const statusIndicator = document.getElementById('statusIndicator');
+            
+            if (response.ok) {
+                const data = await response.json();
+                statusIndicator.className = 'status-indicator status-healthy';
+                console.log('服务状态:', data);
+            } else {
+                statusIndicator.className = 'status-indicator status-error';
+            }
+        } catch (error) {
+            console.error('健康检查失败:', error);
+            document.getElementById('statusIndicator').className = 'status-indicator status-error';
+        }
+    }
+
+    // 加载模型列表
+    async function loadModels() {
+        try {
+            const response = await fetch(`${API_BASE}/v1/models`);
+            const modelSelect = document.getElementById('modelSelect');
+            
+            if (response.ok) {
+                const data = await response.json();
+                modelSelect.innerHTML = '';
+
+                if (data.data && data.data.length > 0) {
+                    data.data.forEach(model => {
+                        const option = document.createElement('option');
+                        option.value = model.id;
+                        option.textContent = model.id;
+                        modelSelect.appendChild(option);
+                    });
+                } else {
+                    // 如果没有模型数据，显示默认选项
+                    const option = document.createElement('option');
+                    option.value = 'default';
+                    option.textContent = '默认模型';
+                    modelSelect.appendChild(option);
+                }
+            } else {
+                // 请求失败时的处理
+                modelSelect.innerHTML = '<option value="default">默认模型</option>';
+            }
+        } catch (error) {
+            console.error('获取模型列表出错:', error);
+            const modelSelect = document.getElementById('modelSelect');
+            modelSelect.innerHTML = '<option value="default">默认模型</option>';
+        }
+    }
+
+    // 发送按钮点击事件
+    document.getElementById('sendButton').addEventListener('click', sendMessage);
+
+    // 回车发送
+    document.getElementById('messageInput').addEventListener('keypress', function (e) {
+        if (e.key === 'Enter') {
+            sendMessage();
+        }
+    });
+
+    function addMessage(role, content, isHtml = false) {
+        const messages = document.getElementById('messages');
+        const div = document.createElement('div');
+        div.className = `message ${role}`;
+        const contentDiv = document.createElement('div');
+        contentDiv.className = 'message-content';
+
+        if (isHtml) {
+            contentDiv.innerHTML = content;
+        } else {
+            contentDiv.textContent = content;
+        }
+
+        div.appendChild(contentDiv);
+        messages.appendChild(div);
+        messages.scrollTop = messages.scrollHeight;
+        return div;
+    }
+
+    // 增强 Markdown 解析和渲染
+    function parseMarkdown(text) {
+        // 处理工具执行标签
+        text = text.replace(/\[正在执行工具\]/g, '<div class="tool-executing">🔧 正在执行工具...</div>');
+        text = text.replace(/\[执行工具(.*?)结果\]/g, '<div class="tool-result-wrapper"><strong>🧪 执行工具$1结果:</strong></div>');
+        text = text.replace(/\[工具执行完成，等待分析\.\.\.\]/g, '<div class="tool-completed">✅ 工具执行完成，正在分析结果...</div>');
+
+        // 处理think标签
+        text = text.replace(/(<think>[\s\S]*?<\/think>)/g, '<details class="think-wrapper"><summary>💡 思考过程</summary>$1</details>');
+
+        // 处理提示块
+        text = text
+            .replace(/:::info([\s\S]*?):::/g, '<div class="info-block">$1</div>')
+            .replace(/:::warning([\s\S]*?):::/g, '<div class="warning-block">$1</div>')
+            .replace(/:::error([\s\S]*?):::/g, '<div class="error-block">$1</div>')
+            .replace(/:::success([\s\S]*?):::/g, '<div class="success-block">$1</div>');
+
+        // 使用 Marked 解析 Markdown
+        const rawHtml = marked.parse(text);
+        const cleanHtml = DOMPurify.sanitize(rawHtml, {
+            ALLOWED_TAGS: ['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'blockquote', 'p', 'a', 'ul', 'ol',
+                'nl', 'li', 'b', 'i', 'strong', 'em', 'strike', 'code', 'hr', 'br', 'div',
+                'table', 'thead', 'tbody', 'tr', 'th', 'td', 'pre', 'button', 'span', 'img',
+                'details', 'summary', 'figure', 'figcaption', 'think'],
+            ALLOWED_ATTR: ['href', 'target', 'title', 'class', 'id', 'style', 'onclick', 'lang', 'src', 'alt', 'open'],
+            FORBID_TAGS: ['script', 'iframe', 'object', 'embed'],
+            FORBID_ATTR: ['onerror', 'onload', 'onmouseover']
+        });
+
+        return cleanHtml;
+    }
+
+    // 复制代码功能
+    window.copyCode = function (button) {
+        const codeBlock = button.nextElementSibling.querySelector('code');
+        const code = codeBlock.innerText || codeBlock.textContent;
+
+        navigator.clipboard.writeText(code).then(() => {
+            const originalText = button.textContent;
+            button.textContent = '已复制!';
+            button.style.background = '#40c057';
+            button.style.color = 'white';
+
+            setTimeout(() => {
+                button.textContent = originalText;
+                button.style.background = 'rgba(255, 255, 255, 0.7)';
+                button.style.color = 'inherit';
+            }, 2000);
+        }).catch(err => {
+            console.error('复制失败:', err);
+        });
+    };
+
+    async function sendMessage() {
+        const input = document.getElementById('messageInput');
+        const message = input.value.trim();
+        if (!message) return;
+
+        // 如果有正在处理的请求，不允许发送新消息
+        if (isProcessing) {
+            alert('请等待当前对话完成');
+            return;
+        }
+
+        // 开始处理标志
+        isProcessing = true;
+        document.getElementById('sendButton').disabled = true;
+        document.getElementById('sendButton').textContent = '处理中...';
+
+        // 添加用户消息
+        addMessage('user', message);
+        conversationHistory.push({role: 'user', content: message});
+        input.value = '';
+
+        // 流式响应统计
+        let startTime = Date.now();
+        let firstTokenTime = null;
+        let tokenCount = 0;
+
+        try {
+            const model = document.getElementById('modelSelect').value || 'default';
+
+            // 添加助手消息占位
+            const assistantDiv = addMessage('assistant', '', true);
+            const contentDiv = assistantDiv.querySelector('.message-content');
+            let accumulated = '';
+
+            const response = await fetch(`${API_BASE}/v1/chat/completions`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Accept': 'text/event-stream'
+                },
+                mode: 'cors',  // 显式指定CORS模式
+                body: JSON.stringify({
+                    model: model,
+                    messages: conversationHistory,
+                    stream: true,
+                    temperature: 0.7,
+                    max_tokens: 2048
+                })
+            });
+
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            }
+
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
+
+            while (true) {
+                const {done, value} = await reader.read();
+                if (done) break;
+
+                buffer += decoder.decode(value, {stream: true});
+                const lines = buffer.split('\n');
+                buffer = lines.pop();
+
+                for (const line of lines) {
+                    if (line.startsWith('data: ')) {
+                        const data = line.slice(6);
+                        if (data === '[DONE]') continue;
+
+                        try {
+                            const json = JSON.parse(data);
+                            
+                            if (json.error) {
+                                throw new Error(json.error);
+                            }
+                            
+                            if (json.choices && json.choices[0]) {
+                                const chunk = json.choices[0];
+
+                                if (chunk.delta && chunk.delta.content) {
+                                    if (!firstTokenTime) {
+                                        firstTokenTime = Date.now();
+                                    }
+
+                                    accumulated += chunk.delta.content;
+                                    contentDiv.innerHTML = parseMarkdown(accumulated);
+
+                                    // 高亮新添加的代码块
+                                    contentDiv.querySelectorAll('pre code').forEach((block) => {
+                                        hljs.highlightElement(block);
+                                    });
+
+                                    tokenCount = accumulated.length;
+                                    document.getElementById('messages').scrollTop = document.getElementById('messages').scrollHeight;
+                                }
+                            }
+                        } catch (e) {
+                            console.error('解析流式响应错误:', e, '原始数据:', data);
+                        }
+                    }
+                }
+            }
+
+            // 完成 Markdown 最终处理
+            contentDiv.innerHTML = parseMarkdown(accumulated);
+            contentDiv.querySelectorAll('pre code').forEach((block) => {
+                hljs.highlightElement(block);
+            });
+
+            // 添加统计信息
+            const endTime = Date.now();
+            const duration = (endTime - startTime) / 1000;
+            const tokensPerSecond = (tokenCount / duration).toFixed(2);
+            const timeToFirstToken = firstTokenTime ? ((firstTokenTime - startTime) / 1000).toFixed(2) : '0';
+
+            const statsDiv = document.createElement('div');
+            statsDiv.className = 'message-stats';
+            statsDiv.textContent = `${tokensPerSecond} tok/sec • ${tokenCount} tokens • ${timeToFirstToken}s to first token`;
+            assistantDiv.appendChild(statsDiv);
+
+            // 添加到对话历史
+            conversationHistory.push({role: 'assistant', content: accumulated});
+
+        } catch (error) {
+            console.error('发送消息错误:', error);
+            addMessage('assistant', `❌ 错误: ${error.message}`);
+        } finally {
+            // 重置处理状态
+            isProcessing = false;
+            document.getElementById('sendButton').disabled = false;
+            document.getElementById('sendButton').textContent = '发送';
+        }
+    }
+
+    function clearChat() {
+        if (confirm('确定要清空对话吗？')) {
+            conversationHistory = [];
+            isProcessing = false;
+            
+            const messages = document.getElementById('messages');
+            messages.innerHTML = `
+                <div class="message assistant">
+                    <div class="message-content">
+                        你好！我是基于MCP Framework v2的AI助手。<br>
+                        我可以使用多种工具来帮助你，包括文件操作、时间查询等。<br>
+                        <strong>🚀 v2架构特点：</strong><br>
+                        • 微核心 + 插件设计<br>
+                        • 代码量减少40%<br>
+                        • 更快的启动速度<br>
+                        • 更好的可扩展性
+                    </div>
+                </div>
+            `;
+        }
+    }
+</script>
+</body>
+</html>

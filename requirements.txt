@@ -1,0 +1,6 @@
+fastapi
+uvicorn[standard]
+pydantic
+aiohttp
+openai>=1.0.0
+mcp
