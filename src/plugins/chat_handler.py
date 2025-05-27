@@ -1,5 +1,5 @@
 """
-聊天处理插件 - 精简版
+聊天处理插件 - 精简版（修复版）
 """
 import json
 import logging
@@ -9,7 +9,7 @@ from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 
 from ..core.plugin import Plugin
-from ..core.models import ChatRequest, ChatMessage
+from ..core.models import ChatRequest, ChatMessage, ToolMessage
 
 logger = logging.getLogger(__name__)
 
@@ -109,7 +109,8 @@ class ChatHandlerPlugin(Plugin):
             async for chunk in llm_client.chat_completion(current_request):
                 # 处理响应块
                 self._process_chunk(chunk, state)
-                
+
+                # print(chunk)
                 # 传递给客户端
                 yield chunk
                 
@@ -121,6 +122,27 @@ class ChatHandlerPlugin(Plugin):
             if state["finish_reason"] != "tool_calls" or not state["tool_calls"]:
                 break
             
+            # 通知前端开始执行工具
+            yield {
+                "choices": [{
+                    "delta": {"content": "\n\n[正在执行工具]\n\n"},
+                    "index": 0,
+                    "finish_reason": None
+                }],
+                "object": "chat.completion.chunk"
+            }
+            
+            # 显示工具调用信息
+            tool_calls_info = self._format_tool_calls_for_display(state["tool_calls"])
+            yield {
+                "choices": [{
+                    "delta": {"content": tool_calls_info},
+                    "index": 0,
+                    "finish_reason": None
+                }],
+                "object": "chat.completion.chunk"
+            }
+            
             # 执行工具调用
             assistant_msg = ChatMessage(
                 role="assistant",
@@ -131,7 +153,41 @@ class ChatHandlerPlugin(Plugin):
             
             # 执行所有工具调用
             for tool_call in state["tool_calls"]:
-                await self._execute_tool_call(tool_call, current_request, mcp_manager)
+                # 显示单个工具执行信息
+                function_name = tool_call.get("function", {}).get("name", "unknown")
+                yield {
+                    "choices": [{
+                        "delta": {"content": f"\n\n🔄 **正在执行**: `{function_name}`\n\n"},
+                        "index": 0,
+                        "finish_reason": None
+                    }],
+                    "object": "chat.completion.chunk"
+                }
+                
+                # 执行工具并获取结果
+                result = await self._execute_tool_call(tool_call, current_request, mcp_manager)
+                
+                # 显示工具执行结果
+                if result:
+                    result_display = self._format_tool_result_for_display(function_name, result)
+                    yield {
+                        "choices": [{
+                            "delta": {"content": result_display},
+                            "index": 0,
+                            "finish_reason": None
+                        }],
+                        "object": "chat.completion.chunk"
+                    }
+            
+            # 通知工具执行完成
+            yield {
+                "choices": [{
+                    "delta": {"content": "\n\n[工具执行完成，等待分析...]\n\n"},
+                    "index": 0,
+                    "finish_reason": None
+                }],
+                "object": "chat.completion.chunk"
+            }
             
             # 添加继续提示
             current_request.messages.append(ChatMessage(
@@ -173,6 +229,32 @@ class ChatHandlerPlugin(Plugin):
                     if isinstance(tool_call, dict):
                         self._collect_tool_call(state["tool_calls"], tool_call)
     
+    def _format_tool_calls_for_display(self, tool_calls: List[Dict]) -> str:
+        """格式化工具调用信息用于显示"""
+        if not tool_calls:
+            return ""
+        
+        formatted_calls = []
+        for i, tool_call in enumerate(tool_calls, 1):
+            function = tool_call.get("function", {})
+            function_name = function.get("name", "unknown")
+            arguments = function.get("arguments", "{}")
+
+            # 尝试解析参数以便格式化显示
+            try:
+                if isinstance(arguments, str):
+                    args_dict = json.loads(arguments) if arguments.strip() else {}
+                else:
+                    args_dict = arguments
+                args_str = json.dumps(args_dict, ensure_ascii=False, indent=2)
+            except:
+                args_str = str(arguments)
+            
+            call_info = f"🔧 **工具调用 {i}**: `{function_name}`\n```json\n{args_str}\n```\n"
+            formatted_calls.append(call_info)
+        
+        return "\n".join(formatted_calls)
+    
     def _collect_tool_call(self, tool_calls: List[Dict], tool_call: Dict):
         """收集工具调用数据"""
         index = tool_call.get("index", 0)
@@ -186,14 +268,16 @@ class ChatHandlerPlugin(Plugin):
             })
         
         # 更新数据
-        if "id" in tool_call:
+        if tool_call.get("id"):
             tool_calls[index]["id"] = tool_call["id"]
         
         if "function" in tool_call:
             func = tool_call["function"]
-            if "name" in func and func["name"] is not None:
+            # if "name" in func and func["name"] is not None:
+            if func.get("name"):
                 tool_calls[index]["function"]["name"] = func["name"]
-            if "arguments" in func and func["arguments"] is not None:
+            # if "arguments" in func and func["arguments"] is not None:
+            if func.get("arguments"):
                 # 确保参数是字符串类型
                 args = func["arguments"]
                 if isinstance(args, str):
@@ -203,28 +287,30 @@ class ChatHandlerPlugin(Plugin):
                     tool_calls[index]["function"]["arguments"] += str(args)
     
     async def _execute_tool_call(self, tool_call: Dict, request: ChatRequest, mcp_manager):
-        """执行工具调用"""
+        print(tool_call)
+        """执行工具调用并返回结果"""
         if not isinstance(tool_call, dict):
             logger.error(f"无效的工具调用数据: {tool_call}")
-            return
+            return {"error": "无效的工具调用数据"}
             
         tool_id = tool_call.get("id", f"call_{uuid.uuid4().hex[:8]}")
         function = tool_call.get("function", {})
         
         if not isinstance(function, dict):
             logger.error(f"无效的函数数据: {function}")
-            return
+            return {"error": "无效的函数数据"}
             
         function_name = function.get("name", "")
         arguments = function.get("arguments", "{}")
         
         if not function_name:
             logger.error("工具调用缺少函数名称")
+            error_result = {"error": "工具调用缺少函数名称"}
             request.messages.append(ChatMessage(
                 role="tool",
-                content=json.dumps({"error": "工具调用缺少函数名称"})
+                content=json.dumps(error_result)
             ))
-            return
+            return error_result
         
         try:
             # 解析参数
@@ -255,21 +341,96 @@ class ChatHandlerPlugin(Plugin):
             
             # 执行工具
             result = await mcp_manager.execute_tool(function_name, arguments)
-            logger.info(result)
-            # 添加工具结果消息（简化处理）
-            request.messages.append(ChatMessage(
+            print(result)
+            # 处理MCP返回的结果格式
+            processed_result = self._process_mcp_result(result)
+            print(processed_result)
+            # 添加工具结果消息
+            request.messages.append(ToolMessage(
                 role="tool",
-                # content=json.dumps(result, ensure_ascii=False)
-                content=f'{result}'
+                tool_call_id=tool_id,
+                content=json.dumps(processed_result, ensure_ascii=False) if isinstance(processed_result, (dict, list)) else str(processed_result)
             ))
+            
+            return processed_result
             
         except Exception as e:
             logger.error(f"工具执行失败: {function_name}, 错误: {e}")
             # 添加错误消息
+            error_result = {"error": str(e)}
             request.messages.append(ChatMessage(
                 role="tool",
-                content=json.dumps({"error": str(e)})
+                content=json.dumps(error_result)
             ))
+            return error_result
+    
+    def _process_mcp_result(self, result: Any) -> Any:
+        """处理MCP返回的结果格式"""
+        try:
+            # 如果是列表，处理列表中的每个元素
+            if isinstance(result, list):
+                processed_items = []
+                for item in result:
+                    processed_items.append(self._process_single_mcp_item(item))
+                return processed_items
+            else:
+                # 单个项目
+                return self._process_single_mcp_item(result)
+                
+        except Exception as e:
+            logger.error(f"处理MCP结果失败: {e}")
+            return str(result)
+    
+    def _process_single_mcp_item(self, item: Any) -> Any:
+        """处理单个MCP结果项"""
+        # 检查是否是TextContent类型
+        if hasattr(item, 'type') and hasattr(item, 'text'):
+            # MCP TextContent 对象
+            if item.type == 'text':
+                try:
+                    # 尝试解析为JSON
+                    return json.loads(item.text)
+                except json.JSONDecodeError:
+                    # 如果不是JSON，直接返回文本
+                    return item.text
+            else:
+                # 其他类型的content
+                return item.text if hasattr(item, 'text') else str(item)
+        
+        # 如果是字典或列表，直接返回
+        elif isinstance(item, (dict, list, str, int, float, bool, type(None))):
+            return item
+        
+        # 其他类型，转换为字符串
+        else:
+            return str(item)
+    
+    def _format_tool_result_for_display(self, function_name: str, result: Any) -> str:
+        """格式化工具结果用于显示"""
+        try:
+            # 检查是否是错误结果
+            if isinstance(result, dict) and "error" in result:
+                return f"\n\n❌ **工具执行失败**: `{function_name}`\n```\n{result['error']}\n```\n"
+            
+            # 格式化正常结果
+            if isinstance(result, (dict, list)):
+                # 对于复杂对象，缩短显示
+                result_str = json.dumps(result, ensure_ascii=False, indent=2)
+                # 如果结果太长，截断显示
+                if len(result_str) > 500:
+                    result_str = result_str[:500] + "\n... (结果被截断)"
+                return f"\n\n✅ **工具执行成功**: `{function_name}`\n```json\n{result_str}\n```\n"
+            elif isinstance(result, str):
+                # 对于字符串结果
+                display_result = result if len(result) <= 300 else result[:300] + "... (结果被截断)"
+                return f"\n\n✅ **工具执行成功**: `{function_name}`\n```\n{display_result}\n```\n"
+            else:
+                # 其他类型
+                return f"\n\n✅ **工具执行成功**: `{function_name}`\n```\n{str(result)}\n```\n"
+                
+        except Exception as e:
+            logger.error(f"格式化结果显示失败: {e}")
+            return f"\n\n✅ **工具执行成功**: `{function_name}` (结果格式化失败)\n"
     
     def _build_system_prompt(self, tools: List[Dict[str, Any]]) -> str:
         """构建系统提示"""

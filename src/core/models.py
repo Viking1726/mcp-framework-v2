@@ -10,6 +10,12 @@ class ChatMessage(BaseModel):
     content: Optional[str] = None
     tool_calls: Optional[List[Dict[str, Any]]] = None
 
+class ToolMessage(BaseModel):
+    """聊天消息"""
+    role: str
+    tool_call_id: str
+    content: Optional[str] = None
+
 class ChatRequest(BaseModel):
     """聊天请求"""
     model: str
