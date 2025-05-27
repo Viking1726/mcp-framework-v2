@@ -4,9 +4,9 @@
         "port": 8000
     },
     "llm": {
-        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        "model": "qwen-plus",
-        "api_key": "sk-8792c0c8311643a9a4ad31c8292bf5bd",
+        "base_url": "http://localhost:1234/v1",
+        "model": "qwen3-8b-mlx",
+        "api_key": "",
         "timeout": 300
     },
     "mcp_servers": [
