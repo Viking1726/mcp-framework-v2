@@ -418,6 +418,7 @@
 <script>
     const API_BASE = 'http://localhost:8000';
     let conversationHistory = [];
+    let sessionId = crypto.randomUUID();
     let isProcessing = false;
 
     // 配置 Marked 选项
@@ -617,6 +618,7 @@
 
         // 添加用户消息
         addMessage('user', message);
+        conversationHistory = []
         conversationHistory.push({role: 'user', content: message});
         input.value = '';
 
@@ -642,6 +644,7 @@
                 mode: 'cors',  // 显式指定CORS模式
                 body: JSON.stringify({
                     model: model,
+                    session_id: sessionId,
                     messages: conversationHistory,
                     stream: true,
                     temperature: 0.7,
@@ -722,7 +725,7 @@
             assistantDiv.appendChild(statsDiv);
 
             // 添加到对话历史
-            conversationHistory.push({role: 'assistant', content: accumulated});
+            // conversationHistory.push({role: 'assistant', content: accumulated});
 
         } catch (error) {
             console.error('发送消息错误:', error);
@@ -738,6 +741,7 @@
     function clearChat() {
         if (confirm('确定要清空对话吗？')) {
             conversationHistory = [];
+            sessionId = crypto.randomUUID();
             isProcessing = false;
             
             const messages = document.getElementById('messages');

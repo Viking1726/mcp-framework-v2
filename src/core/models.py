@@ -18,6 +18,7 @@ class ToolMessage(BaseModel):
 
 class ChatRequest(BaseModel):
     """聊天请求"""
+    session_id: str
     model: str
     messages: List[ChatMessage]
     stream: bool = True
@@ -33,3 +34,17 @@ class ChatResponse(BaseModel):
     created: int
     model: str
     choices: List[Dict[str, Any]]
+
+class ModelObject(BaseModel):
+    """模型对象格式"""
+    id: str
+    object: str = "model"
+    created: int
+    owned_by: str
+
+class ModelListResponse(BaseModel):
+    """模型列表响应格式"""
+    object: str = "list"
+    data: List[ModelObject]
+
+

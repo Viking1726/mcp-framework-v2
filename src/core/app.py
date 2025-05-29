@@ -57,8 +57,13 @@ class MCPCore:
         # 模型列表路由
         @app.get("/v1/models")
         async def list_models():
+            # 先尝试从 LLM 服务获取模型列表
+
             llm_client = self.get_plugin('llm_client')
             if llm_client:
+                models = await llm_client.get_models()
+                if models:
+                    return models
                 # 返回默认模型列表
                 return {
                     "object": "list",
@@ -105,12 +110,14 @@ class MCPCore:
         from ..plugins.llm_client import LLMClientPlugin
         from ..plugins.mcp_manager import MCPManagerPlugin
         from ..plugins.chat_handler import ChatHandlerPlugin
-        
+        from ..plugins.session_manager import SessionManagerPlugin
+
         # 按依赖顺序加载插件
         plugins = [
             ("llm_client", LLMClientPlugin),
             ("mcp_manager", MCPManagerPlugin), 
             ("chat_handler", ChatHandlerPlugin),
+            ("session_manager", SessionManagerPlugin),
         ]
         
         for name, plugin_class in plugins:
