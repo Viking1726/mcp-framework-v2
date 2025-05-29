@@ -7,6 +7,7 @@ import uuid
 from typing import AsyncIterator, Dict, Any, List
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
+from . import session_manager
 
 from ..core.plugin import Plugin
 from ..core.models import ChatRequest, ChatMessage, ToolMessage
@@ -48,6 +49,75 @@ class ChatHandlerPlugin(Plugin):
             }
         )
 
+    async def _process_session_messages(
+            self,
+            request: ChatRequest,
+            session_manager,
+            mcp_manager
+    ) -> List[ChatMessage]:
+        """处理会话消息，整合历史对话和当前请求"""
+
+        # 1. 处理会话
+        if request.session_id and session_manager:
+            # 获取或创建会话
+            session = session_manager.get_session(request.session_id)
+            if not session:
+                session_manager.create_session(request.session_id)
+
+            # 将当前请求的所有新消息添加到会话中
+            for message in request.messages:
+                if message.role in ['user', 'assistant']:  # 只保存用户和助手消息
+                    session_manager.update_session(request.session_id, message)
+
+            # 获取完整的会话历史
+            session_messages = session_manager.get_session_messages(request.session_id)
+        else:
+            # 无会话模式，直接使用请求消息
+            session_messages = request.messages.copy()
+
+        # 2. 处理系统消息和工具
+        final_messages = []
+        has_system_message = False
+
+        # 检查是否已有系统消息
+        for msg in session_messages:
+            if msg.role == "system":
+                has_system_message = True
+                break
+
+        # 3. 添加工具相关的系统提示
+        if mcp_manager:
+            tools = mcp_manager.get_all_tools()
+            if tools:
+                request.tools = tools
+
+                # 构建系统提示
+                system_prompt = self._build_system_prompt(tools)
+
+                if has_system_message:
+                    # 如果已有系统消息，更新第一个系统消息
+                    for i, msg in enumerate(session_messages):
+                        if msg.role == "system":
+                            # 合并系统提示，避免重复
+                            existing_content = msg.content or ""
+                            if "可以使用以下工具" not in existing_content:
+                                session_messages[i] = ChatMessage(
+                                    role="system",
+                                    content=f"{existing_content}\n\n{system_prompt}".strip()
+                                )
+                            break
+                else:
+                    # 添加新的系统消息
+                    final_messages.append(ChatMessage(
+                        role="system",
+                        content=system_prompt
+                    ))
+
+        # 4. 添加所有其他消息
+        final_messages.extend(session_messages)
+
+        return final_messages
+
     async def chat_completions(self, request: ChatRequest):
         """聊天完成接口"""
         try:
@@ -56,21 +126,26 @@ class ChatHandlerPlugin(Plugin):
             mcp_manager = self.core.get_plugin('mcp_manager')
             session_manager = self.core.get_plugin('session_manager')
 
-            # 增强请求（添加工具）
-            if mcp_manager:
-                tools = mcp_manager.get_all_tools()
-                if tools:
-                    request.tools = tools
-                    # 添加系统提示
-                    system_prompt = self._build_system_prompt(tools)
-                    request.messages.insert(0, ChatMessage(
-                        role="system",
-                        content=system_prompt
-                    ))
+            # # 增强请求（添加工具）
+            # if mcp_manager:
+            #     tools = mcp_manager.get_all_tools()
+            #     if tools:
+            #         request.tools = tools
+            #         # 添加系统提示
+            #         system_prompt = self._build_system_prompt(tools)
+            #         request.messages.insert(0, ChatMessage(
+            #             role="system",
+            #             content=system_prompt
+            #         ))
+
+            processed_messages = await self._process_session_messages(
+                request, session_manager, mcp_manager
+            )
+            request.messages = processed_messages
 
             # 处理交互式对话
             async def generate():
-                async for chunk in self._handle_interactive_chat(request, llm_client, mcp_manager):
+                async for chunk in self._handle_interactive_chat(request, llm_client, mcp_manager, session_manager):
                     yield f"data: {json.dumps(chunk)}\n\n"
                 yield "data: [DONE]\n\n"
 
@@ -93,7 +168,8 @@ class ChatHandlerPlugin(Plugin):
 
             return StreamingResponse(error_response(), media_type="text/event-stream")
 
-    async def _handle_interactive_chat(self, request: ChatRequest, llm_client, mcp_manager) -> AsyncIterator[
+    async def _handle_interactive_chat(self, request: ChatRequest, llm_client, mcp_manager, session_manager) -> \
+    AsyncIterator[
         Dict[str, Any]]:
         """处理交互式聊天"""
         max_rounds = 50  # 最大交互轮次
@@ -124,6 +200,11 @@ class ChatHandlerPlugin(Plugin):
 
             # 如果没有工具调用，结束对话
             if state["finish_reason"] != "tool_calls" or not state["tool_calls"]:
+                assistant_message = ChatMessage(
+                    role="assistant",
+                    content=state["content"]
+                )
+                session_manager.update_session(request.session_id, assistant_message)
                 break
 
             # 通知前端开始执行工具
@@ -148,12 +229,13 @@ class ChatHandlerPlugin(Plugin):
             }
 
             # 执行工具调用
-            assistant_msg = ChatMessage(
+            assistant_message = ChatMessage(
                 role="assistant",
                 content=state["content"],
                 tool_calls=state["tool_calls"]
             )
-            current_request.messages.append(assistant_msg)
+            current_request.messages.append(assistant_message)
+            session_manager.update_session(request.session_id, assistant_message)
 
             # 执行所有工具调用
             for tool_call in state["tool_calls"]:
@@ -169,7 +251,7 @@ class ChatHandlerPlugin(Plugin):
                 }
 
                 # 执行工具并获取结果
-                result = await self._execute_tool_call(tool_call, current_request, mcp_manager)
+                result = await self._execute_tool_call(tool_call, current_request, mcp_manager, session_manager)
 
                 # 显示工具执行结果
                 if result:
@@ -194,10 +276,9 @@ class ChatHandlerPlugin(Plugin):
             }
 
             # 添加继续提示
-            current_request.messages.append(ChatMessage(
-                role="user",
-                content="请根据工具执行结果继续回答。"
-            ))
+            message = ChatMessage(role="user", content="请根据工具执行结果继续回答。")
+            current_request.messages.append(message)
+            session_manager.update_session(request.session_id, message)
 
     def _process_chunk(self, chunk: Dict[str, Any], state: Dict[str, Any]):
         """处理响应块"""
@@ -290,7 +371,7 @@ class ChatHandlerPlugin(Plugin):
                     # 如果不是字符串，转换为字符串
                     tool_calls[index]["function"]["arguments"] += str(args)
 
-    async def _execute_tool_call(self, tool_call: Dict, request: ChatRequest, mcp_manager):
+    async def _execute_tool_call(self, tool_call: Dict, request: ChatRequest, mcp_manager, session_manager):
 
         """执行工具调用并返回结果"""
         if not isinstance(tool_call, dict):
@@ -310,10 +391,9 @@ class ChatHandlerPlugin(Plugin):
         if not function_name:
             logger.error("工具调用缺少函数名称")
             error_result = {"error": "工具调用缺少函数名称"}
-            request.messages.append(ChatMessage(
-                role="tool",
-                content=json.dumps(error_result)
-            ))
+            error_message = ChatMessage(role="tool", content=json.dumps(error_result))
+            request.messages.append(error_message)
+            session_manager.update_session(request.session_id, error_message)
             return error_result
 
         try:
@@ -349,13 +429,11 @@ class ChatHandlerPlugin(Plugin):
             processed_result = self._process_mcp_result(result)
 
             # 添加工具结果消息
-            request.messages.append(ToolMessage(
-                role="tool",
-                tool_call_id=tool_id,
-                content=json.dumps(processed_result, ensure_ascii=False) if isinstance(processed_result,
-                                                                                       (dict, list)) else str(
-                    processed_result)
-            ))
+            tool_message = ToolMessage(role="tool", tool_call_id=tool_id,
+                                       content=json.dumps(processed_result, ensure_ascii=False) if isinstance(
+                                           processed_result, (dict, list)) else str(processed_result))
+            request.messages.append(tool_message)
+            session_manager.update_session(request.session_id, tool_message)
 
             return processed_result
 
@@ -363,10 +441,9 @@ class ChatHandlerPlugin(Plugin):
             logger.error(f"工具执行失败: {function_name}, 错误: {e}")
             # 添加错误消息
             error_result = {"error": str(e)}
-            request.messages.append(ChatMessage(
-                role="tool",
-                content=json.dumps(error_result)
-            ))
+            error_message = ChatMessage(role="tool", content=json.dumps(error_result))
+            request.messages.append(error_message)
+            session_manager.update_session(request.session_id, error_message)
             return error_result
 
     def _process_mcp_result(self, result: Any) -> Any:
